@@ -2,7 +2,7 @@ const functions = require("firebase-functions")
 const request = require("request")
 
 const token = functions.config().taskme.token
-const projectID = parseInt(functions.config().taskme.project)
+const project_id = parseInt(functions.config().taskme.project)
 const helpText =
   "To add a task for me to get back to you, use `/taskme Your message here` and I'll get a TODO added to my list for today.\n\n" +
   "If your task is somewhat urgent, use `/taskme urgent Your message here` to have `taskme` assign it a higher priority.\n\n" +
@@ -13,69 +13,71 @@ const urgentMarker = `urgent`
 
 exports.taskMe = functions.https.onRequest((req, res) => {
   return new Promise((resolve, reject) => {
-    const { text, user_name, response_url } = req.body
+    const { text, response_url } = req.body
     if (text.toLowerCase() === "help") {
-      res.send({
-        response_type: "ephemeral",
-        text: "How to use /taskme",
-        attachments: [{ text: helpText }]
-      })
+      res.send(slackMessage("How to use /taskme", helpText))
       resolve()
       return
     }
 
-    res.send({
-      response_type: "ephemeral",
-      text: "Your task is being added..."
-    })
+    res.send(slackMessage("Your task is being added..."))
 
-    const [isUrgent, msg] = parsePriority(text)
-    const options = {
-      url: "https://beta.todoist.com/API/v8/tasks",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`
-      },
-      json: true,
-      body: {
-        content:
-          msg.length === 0
-            ? `${user_name} has a task for you`
-            : `${user_name} says: ${msg}`,
-        due_string: "today",
-        priority: isUrgent ? 3 : 2,
-        order: 1,
-        project_id: projectID
-      }
-    }
-    request.post(options, (error, response, body) => {
+    addTask(req.body, (error, response, body) => {
       if (!error && response.statusCode === 200) {
-        request.post({
-          url: response_url,
-          json: true,
-          body: {
-            response_type: "ephemeral",
-            text: "Success!",
-            attachments: [{ text: successText }]
-          }
-        })
+        request.post(response_url, slackMessage("Success!", successText))
         resolve()
-      } else {
-        console.error({ error, request: options.body, response: body })
-        request.post({
-          url: response_url,
-          json: true,
-          body: {
-            response_type: "ephemeral",
-            text: "Failed to add a task :(",
-            attachments: [{ text: "Feel free to contact me directly!" }]
-          }
-        })
-        reject(error)
+        return
       }
+
+      console.error({ error, request: options.body, response: body })
+      post(
+        response_url,
+        slackMessage(
+          "Failed to add a task :(",
+          "Feel free to contact me directly!"
+        )
+      )
+      reject(error)
     })
   })
 })
+
+function addTask({ text, user_name }, cb) {
+  const [isUrgent, msg] = parsePriority(text)
+  const content =
+    msg.length === 0
+      ? `${user_name} has a task for you`
+      : `${user_name} says: ${msg}`
+  const priority = isUrgent ? 3 : 2
+  const order = 1
+  const due_string = "today"
+
+  const options = {
+    url: "https://beta.todoist.com/API/v8/tasks",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`
+    },
+    json: true,
+    body: { content, priority, project_id, order, due_string }
+  }
+  request.post(options, cb)
+}
+
+function slackMessage(title, ...rest) {
+  const msg = {
+    response_type: "ephemeral",
+    text: title
+  }
+  if (rest !== undefined && rest.length > 0) {
+    msg.attachments = rest.map((text) => ({ text }))
+  }
+  return msg
+}
+
+function post(url, body, cb) {
+  return request.post({ url, json: true, body }, cb)
+}
 
 function parsePriority(msg = "") {
   const prefix = msg.substr(0, urgentMarker.length)
